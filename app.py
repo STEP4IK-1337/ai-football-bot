@@ -17,19 +17,16 @@ def health():
 
 def run_bot():
     print("🚀 Запускаю бота...")
-    try:
-        asyncio.run(dp.start_polling(bot))
-    except Exception as e:
-        print(f"⚠️ Бот упал: {e}")
-        sys.exit(1)
+    while True:
+        try:
+            asyncio.run(dp.start_polling(bot))
+        except Exception as e:
+            print(f"⚠️ Бот упал: {e}")
+            import time
+            time.sleep(5)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
-    print(f"🌐 Flask сервер запускается на порту {port}")
-    
-    # Запускаем бота в фоновом потоке
-    bot_thread = Thread(target=run_bot, daemon=True)
-    bot_thread.start()
-    
-    # Запускаем Flask
+    print(f"🌐 Flask сервер запущен на порту {port}")
+    Thread(target=run_bot, daemon=True).start()
     app.run(host="0.0.0.0", port=port)
