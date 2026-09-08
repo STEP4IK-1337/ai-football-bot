@@ -23,7 +23,7 @@ REGISTER_URL = "https://lkfv.cc/a284"
 DEPOSIT_URL = "https://lkfv.cc/a284"
 
 # =====================
-# ЛЕНИВАЯ ЗАГРУЗКА ДАННЫХ (ТОЛЬКО ПРИ ПЕРВОМ ЗАПРОСЕ)
+# ЛЕНИВАЯ ЗАГРУЗКА ДАННЫХ
 # =====================
 _matches_df = None
 _elo_df = None
@@ -31,17 +31,16 @@ _TEAMS_DB = None
 
 def load_data():
     global _matches_df, _elo_df, _TEAMS_DB
-    
     if _matches_df is not None:
         return _matches_df, _TEAMS_DB
-    
+
     print("📥 Загружаю данные...")
     try:
         _matches_df = pd.read_csv("data/Matches.csv", low_memory=False)
-        elo_df = pd.read_csv("data/EloRatings.csv", names=["Date", "Team", "Country", "Elo"], skiprows=1)
-        
-        team_elo = {row["Team"]: row["Elo"] for _, row in elo_df.iterrows()}
-        
+        _elo_df = pd.read_csv("data/EloRatings.csv", names=["Date", "Team", "Country", "Elo"], skiprows=1)
+
+        team_elo = {row["Team"]: row["Elo"] for _, row in _elo_df.iterrows()}
+
         _TEAMS_DB = {}
         for team in set(_matches_df["HomeTeam"].unique()).union(set(_matches_df["AwayTeam"].unique())):
             if pd.isna(team):
@@ -49,11 +48,13 @@ def load_data():
             elo = team_elo.get(team, 1500)
             strength = max(50, min(99, int((elo - 1300) / 10)))
             _TEAMS_DB[team.lower()] = {
-                "name": team, "strength": strength,
+                "name": team,
+                "strength": strength,
                 "attack": strength + random.randint(-5, 5),
                 "defense": strength + random.randint(-5, 5),
                 "form": strength + random.randint(-5, 5),
-                "home_advantage": 5, "elo": elo
+                "home_advantage": 5,
+                "elo": elo
             }
         print(f"✅ Загружено матчей: {len(_matches_df)} | Команд: {len(_TEAMS_DB)}")
     except Exception as e:
@@ -147,7 +148,7 @@ FINAL_TEXT = """🎉 Поздравляем!
 """
 
 # =====================
-# АНАЛИТИКА
+# ПОИСК КОМАНД
 # =====================
 def find_team_local(name, TEAMS_DB):
     name_lower = name.lower().strip()
@@ -169,16 +170,19 @@ def parse_teams(text):
         return " ".join(words[:mid]), " ".join(words[mid:])
     return None, None
 
+# =====================
+# СТАТИСТИКА И АНАЛИЗ
+# =====================
 def get_team_stats(team_name, matches_df, use_last=5):
     team_matches = matches_df[(matches_df["HomeTeam"] == team_name) | (matches_df["AwayTeam"] == team_name)]
     if len(team_matches) == 0:
         return None
     team_matches = team_matches.sort_values("MatchDate", ascending=False).head(use_last)
-    
+
     wins = draws = losses = goals_for = goals_against = 0
     over25_count = total_matches = 0
     btts_count = 0
-    
+
     for _, row in team_matches.iterrows():
         if row["HomeTeam"] == team_name:
             gf, ga = row["FTHome"], row["FTAway"]
@@ -199,32 +203,37 @@ def get_team_stats(team_name, matches_df, use_last=5):
             over25_count += 1
         if gf > 0 and ga > 0:
             btts_count += 1
-    
+
     if total_matches == 0:
         return None
-    
+
     return {
-        "matches": total_matches, "wins": wins, "draws": draws, "losses": losses,
-        "win_rate": wins/total_matches, "draw_rate": draws/total_matches,
-        "lose_rate": losses/total_matches,
-        "goals_for": goals_for, "goals_against": goals_against,
-        "avg_goals_for": goals_for/total_matches,
-        "avg_goals_against": goals_against/total_matches,
-        "over25_rate": over25_count/total_matches,
-        "btts_rate": btts_count/total_matches
+        "matches": total_matches,
+        "wins": wins,
+        "draws": draws,
+        "losses": losses,
+        "win_rate": wins / total_matches,
+        "draw_rate": draws / total_matches,
+        "lose_rate": losses / total_matches,
+        "goals_for": goals_for,
+        "goals_against": goals_against,
+        "avg_goals_for": goals_for / total_matches,
+        "avg_goals_against": goals_against / total_matches,
+        "over25_rate": over25_count / total_matches,
+        "btts_rate": btts_count / total_matches
     }
 
 def calc_probs(t1, t2, matches_df):
     s1 = get_team_stats(t1["name"], matches_df)
     s2 = get_team_stats(t2["name"], matches_df)
-    
+
     if not s1 or not s2:
         return 33, 34, 33, 50, 50
-    
+
     p1 = s1["win_rate"] * 0.6 + s2["lose_rate"] * 0.4
     p2 = s2["win_rate"] * 0.6 + s1["lose_rate"] * 0.4
     pd_ = s1["draw_rate"] * 0.5 + s2["draw_rate"] * 0.5
-    
+
     elo_diff = t1.get("elo", 1500) - t2.get("elo", 1500)
     if elo_diff > 50:
         p1 += 0.05
@@ -232,7 +241,7 @@ def calc_probs(t1, t2, matches_df):
     elif elo_diff < -50:
         p1 -= 0.05
         p2 += 0.05
-    
+
     total = p1 + pd_ + p2
     p1 = max(10, min(80, round(p1 / total * 100)))
     pd_ = max(10, min(40, round(pd_ / total * 100)))
@@ -241,19 +250,19 @@ def calc_probs(t1, t2, matches_df):
     p1 = int(p1 / total * 100)
     pd_ = int(pd_ / total * 100)
     p2 = int(p2 / total * 100)
-    
+
     over25 = int((s1["over25_rate"] * 0.5 + s2["over25_rate"] * 0.5) * 100)
     btts = int((s1["btts_rate"] * 0.5 + s2["btts_rate"] * 0.5) * 100)
-    
+
     return p1, pd_, p2, over25, btts
 
 def build_analysis(t1, t2, matches_df):
     p1, draw, p2, over25, btts = calc_probs(t1, t2, matches_df)
-    
+
     fav = t1["name"] if p1 > p2 and p1 > draw else (t2["name"] if p2 > p1 and p2 > draw else "Ничья")
     fav_prob = max(p1, p2, draw)
     under25 = 100 - over25
-    
+
     markets = []
     if p1 > 50: markets.append(("Победа " + t1["name"], p1))
     if p2 > 50: markets.append(("Победа " + t2["name"], p2))
@@ -262,14 +271,14 @@ def build_analysis(t1, t2, matches_df):
     if btts > 55: markets.append(("Обе забьют (BTTS)", btts))
     if not markets:
         markets = [("Победа " + t1["name"], p1), ("Ничья", draw), ("Победа " + t2["name"], p2)]
-    
+
     best = max(markets, key=lambda x: x[1])
     second = None
     if len(markets) > 1 and markets[1][1] >= 50:
         second = markets[1]
-    
+
     second_text = f"\n📌 Дополнительный прогноз: {second[0]} — {second[1]}%" if second else "\n📌 Дополнительный прогноз: нет (все рынки < 50%)"
-    
+
     result = f"""
 ⚽️ AI-Анализ матча
 {t1['name']} — {t2['name']}
@@ -332,31 +341,30 @@ async def step2_done(callback):
 async def analyze_handler(message: Message):
     user_id = message.from_user.id
     create_user_if_not_exists(user_id)
-    
+
     if not is_completed(user_id):
         await message.answer("⚠️ Сначала пройди регистрацию и депозит.", reply_markup=step1_keyboard())
         return
-    
+
     text = message.text.replace("/analyze", "").strip()
     if not text:
         await message.answer("Напиши так: /analyze Команда1 | Команда2")
         return
-    
+
     team1_name, team2_name = parse_teams(text)
     if not team1_name or not team2_name:
         await message.answer("❌ Не могу распознать команды.\nИспользуй формат:\n/analyze Команда1 | Команда2")
         return
-    
-    # ==== ТУТ ЗАГРУЖАЮТСЯ ДАННЫЕ (ТОЛЬКО ПРИ ПЕРВОМ ЗАПРОСЕ) ====
+
     matches_df, TEAMS_DB = load_data()
-    
+
     if matches_df is None:
         await message.answer("❌ Ошибка загрузки данных. Попробуй позже.")
         return
-    
+
     t1 = find_team_local(team1_name, TEAMS_DB)
     t2 = find_team_local(team2_name, TEAMS_DB)
-    
+
     if not t1:
         await message.answer(f"❌ Команда '{team1_name}' не найдена.\nПопробуй написать на английском.")
         return
@@ -366,7 +374,7 @@ async def analyze_handler(message: Message):
     if t1["name"] == t2["name"]:
         await message.answer("❌ Укажи две РАЗНЫЕ команды!")
         return
-    
+
     analysis = build_analysis(t1, t2, matches_df)
     await message.answer(analysis)
 
