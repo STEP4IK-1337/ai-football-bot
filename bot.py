@@ -1,22 +1,24 @@
-import asyncio
 import os
+import asyncio
 import json
 import pandas as pd
 import random
-from dotenv import load_dotenv
+from flask import Flask
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 
-load_dotenv()
-
+# =====================
+# ПЕРЕМЕННЫЕ
+# =====================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
-    print("❌ BOT_TOKEN не найден в .env!")
+    print("❌ BOT_TOKEN не найден!")
     exit()
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+app = Flask(__name__)
 
 USERS_FILE = "users.json"
 REGISTER_URL = "https://lkfv.cc/a284"
@@ -26,20 +28,18 @@ DEPOSIT_URL = "https://lkfv.cc/a284"
 # ЛЕНИВАЯ ЗАГРУЗКА ДАННЫХ
 # =====================
 _matches_df = None
-_elo_df = None
 _TEAMS_DB = None
 
 def load_data():
-    global _matches_df, _elo_df, _TEAMS_DB
+    global _matches_df, _TEAMS_DB
     if _matches_df is not None:
         return _matches_df, _TEAMS_DB
 
     print("📥 Загружаю данные...")
     try:
         _matches_df = pd.read_csv("data/Matches.csv", low_memory=False)
-        _elo_df = pd.read_csv("data/EloRatings.csv", names=["Date", "Team", "Country", "Elo"], skiprows=1)
-
-        team_elo = {row["Team"]: row["Elo"] for _, row in _elo_df.iterrows()}
+        elo_df = pd.read_csv("data/EloRatings.csv", names=["Date", "Team", "Country", "Elo"], skiprows=1)
+        team_elo = {row["Team"]: row["Elo"] for _, row in elo_df.iterrows()}
 
         _TEAMS_DB = {}
         for team in set(_matches_df["HomeTeam"].unique()).union(set(_matches_df["AwayTeam"].unique())):
@@ -69,19 +69,18 @@ def load_data():
 def load_users():
     if not os.path.exists(USERS_FILE):
         return {}
-    with open(USERS_FILE, "r", encoding="utf-8") as f:
+    with open(USERS_FILE, "r") as f:
         try:
             return json.load(f)
         except:
             return {}
 
 def save_users(users):
-    with open(USERS_FILE, "w", encoding="utf-8") as f:
-        json.dump(users, f, ensure_ascii=False, indent=2)
+    with open(USERS_FILE, "w") as f:
+        json.dump(users, f, indent=2)
 
 def get_user(user_id):
-    users = load_users()
-    return users.get(str(user_id))
+    return load_users().get(str(user_id))
 
 def update_user(user_id, data):
     users = load_users()
@@ -90,13 +89,10 @@ def update_user(user_id, data):
 
 def is_completed(user_id):
     user = get_user(user_id)
-    if not user:
-        return False
-    return bool(user.get("completed"))
+    return bool(user and user.get("completed"))
 
 def create_user_if_not_exists(user_id):
-    user = get_user(user_id)
-    if not user:
+    if not get_user(user_id):
         update_user(user_id, {"registered": False, "deposited": False, "completed": False})
 
 # =====================
@@ -150,7 +146,7 @@ FINAL_TEXT = """🎉 Поздравляем!
 # =====================
 # ПОИСК КОМАНД
 # =====================
-def find_team_local(name, TEAMS_DB):
+def find_team(name, TEAMS_DB):
     name_lower = name.lower().strip()
     if name_lower in TEAMS_DB:
         return TEAMS_DB[name_lower]
@@ -162,8 +158,7 @@ def find_team_local(name, TEAMS_DB):
 def parse_teams(text):
     for sep in [" | ", " против ", " vs ", " — ", " - "]:
         if sep in text:
-            parts = text.split(sep, 1)
-            return parts[0].strip(), parts[1].strip()
+            return text.split(sep, 1)[0].strip(), text.split(sep, 1)[1].strip()
     words = text.split()
     if len(words) >= 2:
         mid = len(words) // 2
@@ -171,7 +166,7 @@ def parse_teams(text):
     return None, None
 
 # =====================
-# СТАТИСТИКА И АНАЛИЗ
+# СТАТИСТИКА
 # =====================
 def get_team_stats(team_name, matches_df, use_last=5):
     team_matches = matches_df[(matches_df["HomeTeam"] == team_name) | (matches_df["AwayTeam"] == team_name)]
@@ -279,7 +274,7 @@ def build_analysis(t1, t2, matches_df):
 
     second_text = f"\n📌 Дополнительный прогноз: {second[0]} — {second[1]}%" if second else "\n📌 Дополнительный прогноз: нет (все рынки < 50%)"
 
-    result = f"""
+    return f"""
 ⚽️ AI-Анализ матча
 {t1['name']} — {t2['name']}
 
@@ -302,10 +297,20 @@ def build_analysis(t1, t2, matches_df):
 
 ⚠️ Риски: Прогноз основан на статистической модели.
 """
-    return result
 
 # =====================
-# HANDLERS
+# FLASK (для Render)
+# =====================
+@app.route('/')
+def index():
+    return "Bot is running with data!", 200
+
+@app.route('/health')
+def health():
+    return "OK", 200
+
+# =====================
+# BOT HANDLERS
 # =====================
 @dp.message(Command("start"))
 async def start_handler(message: Message):
@@ -362,8 +367,8 @@ async def analyze_handler(message: Message):
         await message.answer("❌ Ошибка загрузки данных. Попробуй позже.")
         return
 
-    t1 = find_team_local(team1_name, TEAMS_DB)
-    t2 = find_team_local(team2_name, TEAMS_DB)
+    t1 = find_team(team1_name, TEAMS_DB)
+    t2 = find_team(team2_name, TEAMS_DB)
 
     if not t1:
         await message.answer(f"❌ Команда '{team1_name}' не найдена.\nПопробуй написать на английском.")
@@ -378,14 +383,21 @@ async def analyze_handler(message: Message):
     analysis = build_analysis(t1, t2, matches_df)
     await message.answer(analysis)
 
-async def main():
-    print("🚀 Бот запущен!")
-    while True:
-        try:
-            await dp.start_polling(bot)
-        except Exception as e:
-            print(f"⚠️ Ошибка: {e}. Переподключаюсь через 5 секунд...")
-            await asyncio.sleep(5)
+async def run_bot():
+    print("🚀 Запускаю бота...")
+    await dp.start_polling(bot)
 
+# =====================
+# ЗАПУСК
+# =====================
 if __name__ == "__main__":
-    asyncio.run(main())
+    port = int(os.environ.get("PORT", 10000))
+
+    # Запускаем бота в фоне
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.create_task(run_bot())
+
+    # Запускаем Flask
+    print(f"🌐 Flask сервер на порту {port}")
+    app.run(host="0.0.0.0", port=port)
